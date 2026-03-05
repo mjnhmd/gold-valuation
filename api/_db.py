@@ -14,12 +14,23 @@ def get_conn():
     return psycopg2.connect(url, cursor_factory=RealDictCursor)
 
 
+def _add_column_if_not_exists(cur, col_name: str, col_type: str):
+    """安全地给 products 表加列（如果不存在）"""
+    cur.execute(
+        """SELECT 1 FROM information_schema.columns WHERE table_name='products' AND column_name=%s""",
+        (col_name,)
+    )
+    if not cur.fetchone():
+        # col_name 和 col_type 都是我们硬编码的常量，安全
+        cur.execute(f"ALTER TABLE products ADD COLUMN {col_name} {col_type}")
+
+
 def init_db():
     """建表（如果不存在）+ 增量加列"""
     conn = get_conn()
     cur = conn.cursor()
 
-    # ── 主表 ──
+    # ── 主表（仅新建时包含全部列）──
     cur.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id              SERIAL PRIMARY KEY,
@@ -39,35 +50,30 @@ def init_db():
             is_price_lowest BOOLEAN NOT NULL DEFAULT FALSE,
             update_time     TIMESTAMP DEFAULT NOW()
         );
+    """)
+
+    # ── 旧索引 ──
+    cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_products_item_id ON products (item_id);
         CREATE INDEX IF NOT EXISTS idx_products_platform ON products (platform);
         CREATE INDEX IF NOT EXISTS idx_products_ppg ON products (price_per_gram);
+    """)
+
+    # ── 增量加列（兼容已有表）──
+    _add_column_if_not_exists(cur, "discount_rate",   "DOUBLE PRECISION NOT NULL DEFAULT 0")
+    _add_column_if_not_exists(cur, "coupon_amount",   "DOUBLE PRECISION NOT NULL DEFAULT 0")
+    _add_column_if_not_exists(cur, "discount_amount", "DOUBLE PRECISION NOT NULL DEFAULT 0")
+    _add_column_if_not_exists(cur, "monthly_sales",   "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_not_exists(cur, "is_price_lowest", "BOOLEAN NOT NULL DEFAULT FALSE")
+    conn.commit()
+
+    # ── 新列索引（列已确保存在后再建）──
+    cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_products_discount_rate ON products (discount_rate);
         CREATE INDEX IF NOT EXISTS idx_products_coupon ON products (coupon_amount);
         CREATE INDEX IF NOT EXISTS idx_products_discount_amt ON products (discount_amount);
         CREATE INDEX IF NOT EXISTS idx_products_sales ON products (monthly_sales);
     """)
-
-    # ── 增量加列（兼容已有表）──
-    new_columns = [
-        ("discount_rate",   "DOUBLE PRECISION NOT NULL DEFAULT 0"),
-        ("coupon_amount",   "DOUBLE PRECISION NOT NULL DEFAULT 0"),
-        ("discount_amount", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
-        ("monthly_sales",   "INTEGER NOT NULL DEFAULT 0"),
-        ("is_price_lowest", "BOOLEAN NOT NULL DEFAULT FALSE"),
-    ]
-    for col_name, col_type in new_columns:
-        cur.execute(f"""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name='products' AND column_name='{col_name}'
-                ) THEN
-                    ALTER TABLE products ADD COLUMN {col_name} {col_type};
-                END IF;
-            END $$;
-        """)
 
     # ── 价格历史表 ──
     cur.execute("""
