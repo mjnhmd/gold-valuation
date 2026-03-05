@@ -3,6 +3,8 @@ GET /api/stats — 统计概览
 """
 from http.server import BaseHTTPRequestHandler
 import json
+import os, sys
+sys.path.insert(0, os.path.dirname(__file__))
 from _db import get_conn, init_db
 
 

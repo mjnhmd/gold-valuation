@@ -5,6 +5,8 @@ GET /api/products — 获取商品列表
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import json
+import os, sys
+sys.path.insert(0, os.path.dirname(__file__))
 from _db import get_conn, init_db
 
 
