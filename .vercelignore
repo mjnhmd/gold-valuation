@@ -1,0 +1,12 @@
+# 排除本地开发用的文件，防止 Vercel 将其识别为 Serverless Function
+main.py
+haodanku_search.py
+backend/
+*.db
+*.db-wal
+*.db-shm
+server.log
+__pycache__/
+.ruff_cache/
+scripts/
+docker-compose.yml

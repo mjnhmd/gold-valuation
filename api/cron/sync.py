@@ -6,7 +6,12 @@ GET /api/cron/sync — Vercel Cron Job 定时同步数据
 from http.server import BaseHTTPRequestHandler
 import json
 import os
+import sys
 from datetime import datetime
+
+# 将 api/ 目录加入 sys.path，以便导入 _db 和 _fetch
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 from _db import get_conn, init_db
 from _fetch import fetch_all
 

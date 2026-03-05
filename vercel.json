@@ -1,10 +1,16 @@
 {
   "buildCommand": "cd frontend && npm install && npm run build",
   "outputDirectory": "frontend/dist",
+  "functions": {
+    "api/**/*.py": {
+      "runtime": "@vercel/python@4"
+    }
+  },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
+  "ignoreCommand": "",
   "crons": [
     {
       "path": "/api/cron/sync",
