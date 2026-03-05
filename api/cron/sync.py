@@ -1,7 +1,6 @@
 """
 GET /api/cron/sync — Vercel Cron Job 定时同步数据
-每天自动调用，也可手动触发
-新增：写入折扣率/优惠券/降价额/销量 + 记录价格历史 + 判断近期新低
+优化：使用 ON CONFLICT 批量 upsert + 批量记录价格历史 + 批量判断新低
 """
 import json
 import os
@@ -17,86 +16,71 @@ if _API_DIR not in sys.path:
 from _db import get_conn, init_db
 from _fetch import fetch_all
 
-# 近期新低对比天数
-PRICE_HISTORY_DAYS = 30
-
-
 def upsert_products(products: list[dict]) -> dict:
-    """批量 upsert 商品到数据库，记录价格历史，判断近期新低"""
+    """批量 upsert 商品 — 用 ON CONFLICT 一条SQL搞定，避免逐条查询"""
     conn = get_conn()
     cur = conn.cursor()
-    inserted, updated, lowest_count = 0, 0, 0
     now = datetime.utcnow()
 
+    inserted, updated = 0, 0
+
     for p in products:
-        cur.execute("SELECT id, final_price FROM products WHERE item_id = %s", (p["item_id"],))
-        existing = cur.fetchone()
-
-        # 判断是否为近期最低价
-        is_lowest = True  # 新商品默认是最低
-        if existing:
-            product_id = existing["id"]
-            # 查询近 N 天历史最低价
-            cur.execute("""
-                SELECT MIN(final_price) AS min_price FROM price_history
-                WHERE product_id = %s
-                  AND recorded_at >= NOW() - INTERVAL '%s days'
-            """, (product_id, PRICE_HISTORY_DAYS))
-            hist = cur.fetchone()
-            if hist and hist["min_price"] is not None:
-                is_lowest = p["final_price"] <= hist["min_price"]
-            # 即使没有历史记录，也和当前价对比
-            elif existing["final_price"]:
-                is_lowest = p["final_price"] <= existing["final_price"]
-
-        if is_lowest:
-            lowest_count += 1
-
-        if existing:
-            cur.execute("""
-                UPDATE products SET
-                    platform=%s, title=%s, cover_image=%s, affiliate_url=%s,
-                    original_price=%s, final_price=%s, weight_grams=%s,
-                    price_per_gram=%s, discount_rate=%s, coupon_amount=%s,
-                    discount_amount=%s, monthly_sales=%s, is_price_lowest=%s,
-                    update_time=%s
-                WHERE item_id=%s
-            """, (
-                p["platform"], p["title"], p["cover_image"], p["affiliate_url"],
-                p["original_price"], p["final_price"], p["weight_grams"],
-                p["price_per_gram"], p["discount_rate"], p["coupon_amount"],
-                p["discount_amount"], p["monthly_sales"], is_lowest,
-                now, p["item_id"],
-            ))
-            updated += 1
-            # 记录价格历史
-            cur.execute("""
-                INSERT INTO price_history (product_id, final_price, original_price, coupon_amount, recorded_at)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (product_id, p["final_price"], p["original_price"], p["coupon_amount"], now))
-        else:
-            cur.execute("""
-                INSERT INTO products
-                    (item_id, platform, title, cover_image, affiliate_url,
-                     original_price, final_price, weight_grams, price_per_gram,
-                     discount_rate, coupon_amount, discount_amount, monthly_sales,
-                     is_price_lowest, update_time)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                RETURNING id
-            """, (
-                p["item_id"], p["platform"], p["title"], p["cover_image"],
-                p["affiliate_url"], p["original_price"], p["final_price"],
-                p["weight_grams"], p["price_per_gram"],
-                p["discount_rate"], p["coupon_amount"], p["discount_amount"],
-                p["monthly_sales"], is_lowest, now,
-            ))
-            new_id = cur.fetchone()["id"]
+        cur.execute("""
+            INSERT INTO products
+                (item_id, platform, title, cover_image, affiliate_url,
+                 original_price, final_price, weight_grams, price_per_gram,
+                 discount_rate, coupon_amount, discount_amount, monthly_sales,
+                 is_price_lowest, update_time)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE,%s)
+            ON CONFLICT (item_id) DO UPDATE SET
+                platform=EXCLUDED.platform, title=EXCLUDED.title,
+                cover_image=EXCLUDED.cover_image, affiliate_url=EXCLUDED.affiliate_url,
+                original_price=EXCLUDED.original_price, final_price=EXCLUDED.final_price,
+                weight_grams=EXCLUDED.weight_grams, price_per_gram=EXCLUDED.price_per_gram,
+                discount_rate=EXCLUDED.discount_rate, coupon_amount=EXCLUDED.coupon_amount,
+                discount_amount=EXCLUDED.discount_amount, monthly_sales=EXCLUDED.monthly_sales,
+                update_time=EXCLUDED.update_time
+            RETURNING (xmax = 0) AS is_insert
+        """, (
+            p["item_id"], p["platform"], p["title"], p["cover_image"],
+            p["affiliate_url"], p["original_price"], p["final_price"],
+            p["weight_grams"], p["price_per_gram"],
+            p["discount_rate"], p["coupon_amount"], p["discount_amount"],
+            p["monthly_sales"], now,
+        ))
+        row = cur.fetchone()
+        if row and row["is_insert"]:
             inserted += 1
-            # 记录首条价格历史
-            cur.execute("""
-                INSERT INTO price_history (product_id, final_price, original_price, coupon_amount, recorded_at)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (new_id, p["final_price"], p["original_price"], p["coupon_amount"], now))
+        else:
+            updated += 1
+
+    conn.commit()
+
+    # ── 批量记录价格历史（一条 INSERT ... SELECT）──
+    cur.execute("""
+        INSERT INTO price_history (product_id, final_price, original_price, coupon_amount, recorded_at)
+        SELECT id, final_price, original_price, coupon_amount, %s
+        FROM products
+        WHERE update_time = %s
+    """, (now, now))
+
+    # ── 批量更新近期新低标记 ──
+    cur.execute("""
+        UPDATE products p SET is_price_lowest = (
+            p.final_price <= COALESCE(
+                (SELECT MIN(ph.final_price) FROM price_history ph
+                 WHERE ph.product_id = p.id
+                   AND ph.recorded_at >= NOW() - INTERVAL '30 days'
+                   AND ph.recorded_at < %s),
+                p.final_price
+            )
+        )
+        WHERE p.update_time = %s
+    """, (now, now))
+
+    # 统计新低数
+    cur.execute("SELECT COUNT(*) AS cnt FROM products WHERE is_price_lowest = TRUE")
+    lowest_count = cur.fetchone()["cnt"]
 
     conn.commit()
     cur.close()

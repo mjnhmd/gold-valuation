@@ -70,7 +70,7 @@ def _get(url: str, label: str) -> dict | None:
 
 
 # ── 淘宝 ──────────────────────────────────────────
-def fetch_taobao(keyword="周大福", pages=2) -> list[dict]:
+def fetch_taobao(keyword="周大福", pages=1) -> list[dict]:
     all_items = []
     for page in range(1, pages + 1):
         url = f"{TB_URL}/apikey/{API_KEY}/keyword/{keyword}/back/100/min_id/1/tb_p/{page}"
@@ -121,7 +121,7 @@ def fetch_taobao(keyword="周大福", pages=2) -> list[dict]:
 
 
 # ── 京东 ──────────────────────────────────────────
-def fetch_jd(keyword="周大福黄金", pages=2) -> list[dict]:
+def fetch_jd(keyword="周大福黄金", pages=1) -> list[dict]:
     results = []
     min_id = 1
     for _ in range(pages):
