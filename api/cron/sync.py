@@ -1,16 +1,17 @@
 """
 GET /api/cron/sync — Vercel Cron Job 定时同步数据
-每天 08:00 / 12:00 / 20:00 (UTC 00:00 / 04:00 / 12:00) 自动调用
-也可手动触发
+每天自动调用，也可手动触发
 """
-from http.server import BaseHTTPRequestHandler
 import json
 import os
 import sys
+from http.server import BaseHTTPRequestHandler
 from datetime import datetime
 
-# 将 api/ 目录加入 sys.path，以便导入 _db 和 _fetch
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# ── 确保能导入 api/ 目录下的 _db 和 _fetch 模块 ──
+_API_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _API_DIR not in sys.path:
+    sys.path.insert(0, _API_DIR)
 
 from _db import get_conn, init_db
 from _fetch import fetch_all
@@ -67,10 +68,7 @@ class handler(BaseHTTPRequestHandler):
             if cron_secret:
                 auth = self.headers.get("Authorization")
                 if auth != f"Bearer {cron_secret}":
-                    self.send_response(401)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(b'{"error":"Unauthorized"}')
+                    self._send_json(401, '{"error":"Unauthorized"}')
                     return
 
             init_db()
@@ -79,10 +77,7 @@ class handler(BaseHTTPRequestHandler):
             products = fetch_all()
             if not products:
                 body = json.dumps({"status": "warning", "message": "未获取到商品数据"})
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(body.encode("utf-8"))
+                self._send_json(200, body)
                 return
 
             # 入库
@@ -96,14 +91,15 @@ class handler(BaseHTTPRequestHandler):
                 "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
             }, ensure_ascii=False)
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(body.encode("utf-8"))
+            self._send_json(200, body)
 
         except Exception as e:
             body = json.dumps({"error": str(e)}, ensure_ascii=False)
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(body.encode("utf-8"))
+            self._send_json(500, body)
+
+    def _send_json(self, status, body):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))

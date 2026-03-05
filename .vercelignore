@@ -1,12 +1,31 @@
-# 排除本地开发用的文件，防止 Vercel 将其识别为 Serverless Function
-main.py
+# ===== 本地开发文件（非 Vercel 部署所需） =====
+local_server.py
 haodanku_search.py
+requirements-local.txt
+
+# 本地后端服务
 backend/
+
+# 数据库文件
 *.db
 *.db-wal
 *.db-shm
+
+# 日志
 server.log
+*.log
+
+# 缓存
 __pycache__/
 .ruff_cache/
+
+# 脚本/工具
 scripts/
 docker-compose.yml
+
+# IDE
+.idea/
+
+# 截图
+*.png
+*.jpg

@@ -1,10 +1,16 @@
 """
 GET /api/stats — 统计概览
 """
-from http.server import BaseHTTPRequestHandler
 import json
-import os, sys
-sys.path.insert(0, os.path.dirname(__file__))
+import os
+import sys
+from http.server import BaseHTTPRequestHandler
+
+# ── 确保能导入同目录下的 _db 模块 ──
+_API_DIR = os.path.dirname(os.path.abspath(__file__))
+if _API_DIR not in sys.path:
+    sys.path.insert(0, _API_DIR)
+
 from _db import get_conn, init_db
 
 
@@ -35,15 +41,15 @@ class handler(BaseHTTPRequestHandler):
                 "last_update_time": r["last_update"].strftime("%Y-%m-%d %H:%M:%S") if r["last_update"] else None,
             }, ensure_ascii=False)
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(body.encode("utf-8"))
+            self._send_json(200, body)
 
         except Exception as e:
             body = json.dumps({"error": str(e)}, ensure_ascii=False)
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(body.encode("utf-8"))
+            self._send_json(500, body)
+
+    def _send_json(self, status, body):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
