@@ -38,3 +38,17 @@ build/
 
 # Data
 data/
+
+# Screenshots & temp files
+*.png
+*.jpg
+screenshot_*
+jd_api_doc.*
+server.log
+
+# SQLite WAL
+*.db-wal
+*.db-shm
+
+# Vercel
+.vercel
