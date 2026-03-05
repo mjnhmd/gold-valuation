@@ -71,7 +71,7 @@
 
       <!-- Buy Button -->
       <a
-        :href="product.affiliate_url"
+        :href="buyLink"
         target="_blank"
         rel="noopener noreferrer"
         class="mt-4 block w-full text-center bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-medium py-2.5 rounded-lg transition-all"
@@ -100,6 +100,19 @@ const discountTags = computed(() => {
   } catch {
     return []
   }
+})
+
+// 生成购买链接：优先使用推广链接，fallback 到平台搜索
+const buyLink = computed(() => {
+  if (props.product.affiliate_url) {
+    return props.product.affiliate_url
+  }
+  // fallback: 根据平台跳转对应搜索页
+  const title = encodeURIComponent(props.product.title)
+  if (props.product.platform === 'JD') {
+    return `https://search.jd.com/Search?keyword=${title}`
+  }
+  return `https://s.taobao.com/search?q=${title}`
 })
 
 // Handle image load error

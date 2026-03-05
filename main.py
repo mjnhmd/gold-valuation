@@ -29,10 +29,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# 好单库 API 配置（复用 haodanku_search.py 中的参数）
+# 好单库 API 配置
 # ============================================================
 API_KEY = "9945FDC4E9E5"
-HAODANKU_BASE_URL = "https://v2.api.haodanku.com/supersearch"
+HAODANKU_TB_URL = "https://v2.api.haodanku.com/supersearch"   # 淘宝超级搜索
+HAODANKU_JD_URL = "https://v3.api.haodanku.com/jd_goods_search"  # 京东搜索
 
 # 克价上限阈值：超过此值视为一口价商品，不入库
 MAX_PRICE_PER_GRAM = 1000.0
@@ -65,12 +66,14 @@ class Product(Base):
 
     id            = Column(Integer, primary_key=True, index=True, autoincrement=True)
     item_id       = Column(String,  unique=True, nullable=False, index=True)   # 商品ID（唯一）
+    platform      = Column(String,  nullable=False, default="TAOBAO")          # 平台: JD, TAOBAO
     title         = Column(String,  nullable=False)                             # 商品标题
     cover_image   = Column(String,  nullable=True)                              # 主图 URL
+    affiliate_url = Column(String,  nullable=True)                              # 带推广计费的跳转链接
     original_price = Column(Float,  nullable=False)                             # 原价
     final_price   = Column(Float,   nullable=False)                             # 券后价
-    weight_grams  = Column(Float,   nullable=False)                             # 黄金克重 (克)
-    price_per_gram = Column(Float,  nullable=False)                             # 每克单价 (元/克)
+    weight_grams  = Column(Float,   nullable=False, default=0)                  # 黄金克重 (克)
+    price_per_gram = Column(Float,  nullable=False, default=0)                  # 每克单价 (元/克)
     update_time   = Column(DateTime, default=datetime.now)                      # 最后更新时间
 
 
@@ -119,103 +122,156 @@ def extract_weight_from_title(title: str) -> Optional[float]:
 
 
 # ============================================================
-# 好单库 API 请求（复用 haodanku_search.py 的逻辑）
+# 好单库 API 请求
 # ============================================================
-def fetch_items_from_haodanku(
+def _safe_request(url: str, label: str) -> dict | None:
+    """通用安全请求封装，返回 JSON dict 或 None"""
+    logger.info(f"📡 请求 {label} — {url[:120]}...")
+    try:
+        resp = http_requests.get(url, timeout=15)
+        resp.raise_for_status()
+    except http_requests.exceptions.Timeout:
+        logger.error(f"❌ [{label}] 请求超时")
+        return None
+    except http_requests.exceptions.ConnectionError:
+        logger.error(f"❌ [{label}] 网络连接失败")
+        return None
+    except http_requests.exceptions.HTTPError as e:
+        logger.error(f"❌ [{label}] HTTP 错误: {e}")
+        return None
+    except http_requests.exceptions.RequestException as e:
+        logger.error(f"❌ [{label}] 请求异常: {e}")
+        return None
+
+    try:
+        return resp.json()
+    except json.JSONDecodeError:
+        logger.error(f"❌ [{label}] 返回非 JSON: {resp.text[:300]}")
+        return None
+
+
+def fetch_items_from_taobao(
     keyword: str = "周大福",
     back: int = 100,
     min_id: int = 1,
     tb_p: int = 1,
 ) -> list[dict]:
-    """
-    调用好单库超级搜索 API，返回商品列表。
-    接口逻辑完全复用 haodanku_search.py 中的 search_gold_items()。
-    """
+    """调用好单库淘宝超级搜索 API，返回商品列表。"""
     url = (
-        f"{HAODANKU_BASE_URL}"
+        f"{HAODANKU_TB_URL}"
         f"/apikey/{API_KEY}"
         f"/keyword/{keyword}"
         f"/back/{back}"
         f"/min_id/{min_id}"
         f"/tb_p/{tb_p}"
     )
-    logger.info(f"📡 请求好单库 API — keyword={keyword}, back={back}, tb_p={tb_p}")
-
-    try:
-        resp = http_requests.get(url, timeout=15)
-        resp.raise_for_status()
-    except http_requests.exceptions.Timeout:
-        logger.error("❌ 请求超时")
-        return []
-    except http_requests.exceptions.ConnectionError:
-        logger.error("❌ 网络连接失败")
-        return []
-    except http_requests.exceptions.HTTPError as e:
-        logger.error(f"❌ HTTP 错误: {e}")
-        return []
-    except http_requests.exceptions.RequestException as e:
-        logger.error(f"❌ 请求异常: {e}")
-        return []
-
-    try:
-        data = resp.json()
-    except json.JSONDecodeError:
-        logger.error(f"❌ 返回非 JSON: {resp.text[:300]}")
+    data = _safe_request(url, f"淘宝搜索 page={tb_p}")
+    if not data:
         return []
 
     if data.get("code") != 1:
-        logger.warning(f"⚠️ API 异常 — code={data.get('code')}, msg={data.get('msg', '')}")
+        logger.warning(f"⚠️ 淘宝API异常 — code={data.get('code')}, msg={data.get('msg', '')}")
         return []
 
     items = data.get("data", [])
-    logger.info(f"✅ 返回 {len(items)} 条商品")
+    logger.info(f"✅ 淘宝返回 {len(items)} 条商品")
     return items
+
+
+def fetch_items_from_jd(
+    keyword: str = "周大福黄金",
+    min_id: int = 1,
+) -> tuple[list[dict], int]:
+    """
+    调用好单库京东搜索 API，返回 (商品列表, 下一页min_id)。
+    京东接口使用 v3 版本，参数风格为 query string。
+    """
+    url = f"{HAODANKU_JD_URL}?apikey={API_KEY}&keyword={keyword}&min_id={min_id}"
+    data = _safe_request(url, f"京东搜索 min_id={min_id}")
+    if not data:
+        return [], 0
+
+    code = data.get("code")
+    if code != 200 and code != 1:
+        logger.warning(f"⚠️ 京东API异常 — code={code}, msg={data.get('msg', '')}")
+        return [], 0
+
+    items = data.get("data", [])
+    next_min_id = data.get("min_id", 0)
+    logger.info(f"✅ 京东返回 {len(items)} 条商品, next_min_id={next_min_id}")
+    return items, next_min_id
+
+
+def normalize_jd_item(item: dict) -> dict:
+    """
+    将京东 API 返回的字段映射为统一的商品格式。
+
+    京东字段映射:
+      goodsname   → title        (商品标题)
+      skuid       → item_id      (商品唯一ID)
+      itempic     → cover_image  (主图)
+      itemprice   → original_price(原价)
+      itemendprice→ final_price   (券后价)
+      couponurl   → affiliate_url (推广链接，京东用 couponurl；若空则构建京东链接)
+    """
+    title = item.get("goodsname", "")
+    item_id = item.get("skuid", "") or item.get("itemid", "")
+    if not item_id or not title:
+        return {}
+
+    try:
+        original_price = float(item.get("itemprice", 0))
+        final_price = float(item.get("itemendprice", 0))
+    except (ValueError, TypeError):
+        return {}
+    if final_price <= 0:
+        return {}
+
+    # 克重
+    weight = extract_weight_from_title(title)
+    if weight is None:
+        weight = 0
+    price_per_gram = round(final_price / weight, 2) if weight > 0 else 0
+
+    # 推广链接：优先 couponurl，否则用 itempic 同域的商品页
+    affiliate_url = item.get("couponurl", "")
+    if not affiliate_url:
+        # 京东 skuid 可能是加密的，无法直接构建商品链接，留空由前端 fallback
+        affiliate_url = ""
+
+    cover_image = item.get("itempic", "") or item.get("jd_image", "").split(",")[0] if item.get("jd_image") else ""
+
+    return {
+        "item_id":        f"jd_{item_id}",  # 加 jd_ 前缀避免与淘宝 ID 冲突
+        "platform":       "JD",
+        "title":          title,
+        "cover_image":    cover_image,
+        "affiliate_url":  affiliate_url,
+        "original_price": original_price,
+        "final_price":    final_price,
+        "weight_grams":   weight,
+        "price_per_gram": price_per_gram,
+    }
 
 
 # ============================================================
 # 核心：数据拉取 → 清洗 → 入库
 # ============================================================
-def fetch_and_process_gold_data():
-    """
-    定时任务核心函数:
-      1. 多页拉取好单库「周大福」商品
-      2. 正则提取标题中的克重
-      3. 计算克价 = final_price / weight_grams
-      4. 过滤：无克重 → 丢弃；克价 > 1000 → 丢弃（一口价）
-      5. 按 item_id 去重入库：存在则更新，不存在则新增
-    """
-    logger.info("🚀 ===== 开始数据拉取与清洗 =====")
-
-    # ---- 1. 多页拉取 ----
-    all_items: list[dict] = []
-    for page in range(1, 6):                       # 最多拉 5 页
-        items = fetch_items_from_haodanku(keyword="周大福", back=100, tb_p=page)
-        all_items.extend(items)
-        if len(items) < 100:                        # 不足一页 → 无更多数据
-            break
-
-    if not all_items:
-        logger.warning("📭 未获取到任何商品，任务结束")
-        return
-
-    # ---- 2 & 3. 清洗 + 过滤 ----
-    valid_products: list[dict] = []
-    skip_no_weight = 0
-    skip_high_price = 0
-
+def _process_taobao_items(all_items: list[dict]) -> list[dict]:
+    """清洗淘宝商品数据，返回统一格式列表"""
+    valid = []
+    no_weight = 0
     for item in all_items:
         title   = item.get("itemtitle", "")
         item_id = item.get("itemid", "")
         if not item_id or not title:
             continue
 
-        # 提取克重
         weight = extract_weight_from_title(title)
         if weight is None:
-            skip_no_weight += 1
-            continue
+            no_weight += 1
+            weight = 0
 
-        # 解析价格
         try:
             original_price = float(item.get("itemprice", 0))
             final_price    = float(item.get("itemendprice", 0))
@@ -224,28 +280,71 @@ def fetch_and_process_gold_data():
         if final_price <= 0:
             continue
 
-        # 计算克价（无论计价黄金还是一口价，统一用 总价 / 克重）
-        price_per_gram = round(final_price / weight, 2)
+        price_per_gram = round(final_price / weight, 2) if weight > 0 else 0
+        affiliate_url = item.get("clickurl", "")
 
-        # 过滤一口价（克价 > 1000 元/克 → 不入库）
-        if price_per_gram > MAX_PRICE_PER_GRAM:
-            skip_high_price += 1
-            continue
-
-        valid_products.append({
+        valid.append({
             "item_id":        str(item_id),
+            "platform":       "TAOBAO",
             "title":          title,
             "cover_image":    item.get("itempic", ""),
+            "affiliate_url":  affiliate_url,
             "original_price": original_price,
             "final_price":    final_price,
             "weight_grams":   weight,
             "price_per_gram": price_per_gram,
         })
 
-    logger.info(
-        f"📊 清洗完成 — 有效 {len(valid_products)} 条 | "
-        f"无克重跳过 {skip_no_weight} 条 | 克价过高跳过 {skip_high_price} 条"
-    )
+    logger.info(f"  淘宝清洗: 有效 {len(valid)} 条, 无克重 {no_weight} 条")
+    return valid
+
+
+def fetch_and_process_gold_data():
+    """
+    定时任务核心函数:
+      1. 多页拉取好单库「周大福」淘宝 + 京东商品
+      2. 正则提取标题中的克重
+      3. 计算克价 = final_price / weight_grams
+      4. 按 item_id 去重入库：存在则更新，不存在则新增
+    """
+    logger.info("🚀 ===== 开始数据拉取与清洗 =====")
+
+    valid_products: list[dict] = []
+
+    # ---- 1a. 拉取淘宝数据（多页） ----
+    logger.info("📦 [淘宝] 开始拉取...")
+    tb_items: list[dict] = []
+    for page in range(1, 6):                        # 最多拉 5 页
+        items = fetch_items_from_taobao(keyword="周大福", back=100, tb_p=page)
+        tb_items.extend(items)
+        if len(items) < 100:                         # 不足一页 → 无更多数据
+            break
+    valid_products.extend(_process_taobao_items(tb_items))
+
+    # ---- 1b. 拉取京东数据（多页） ----
+    logger.info("📦 [京东] 开始拉取...")
+    jd_min_id = 1
+    jd_no_weight = 0
+    jd_valid = 0
+    for _ in range(5):                               # 最多拉 5 页
+        jd_items, next_min_id = fetch_items_from_jd(keyword="周大福黄金", min_id=jd_min_id)
+        for item in jd_items:
+            normalized = normalize_jd_item(item)
+            if normalized:
+                if normalized["weight_grams"] == 0:
+                    jd_no_weight += 1
+                valid_products.append(normalized)
+                jd_valid += 1
+        if not jd_items or not next_min_id or next_min_id <= jd_min_id:
+            break
+        jd_min_id = next_min_id
+    logger.info(f"  京东清洗: 有效 {jd_valid} 条, 无克重 {jd_no_weight} 条")
+
+    if not valid_products:
+        logger.warning("📭 未获取到任何商品，任务结束")
+        return
+
+    logger.info(f"📊 清洗完成 — 共 {len(valid_products)} 条 (淘宝+京东)")
 
     # ---- 4. 入库（upsert） ----
     db = SessionLocal()
@@ -256,8 +355,10 @@ def fetch_and_process_gold_data():
             now = datetime.now()
 
             if existing:
+                existing.platform       = prod["platform"]
                 existing.title          = prod["title"]
                 existing.cover_image    = prod["cover_image"]
+                existing.affiliate_url  = prod["affiliate_url"]
                 existing.original_price = prod["original_price"]
                 existing.final_price    = prod["final_price"]
                 existing.weight_grams   = prod["weight_grams"]
@@ -267,8 +368,10 @@ def fetch_and_process_gold_data():
             else:
                 db.add(Product(
                     item_id        = prod["item_id"],
+                    platform       = prod["platform"],
                     title          = prod["title"],
                     cover_image    = prod["cover_image"],
+                    affiliate_url  = prod["affiliate_url"],
                     original_price = prod["original_price"],
                     final_price    = prod["final_price"],
                     weight_grams   = prod["weight_grams"],
@@ -332,32 +435,52 @@ app = FastAPI(
 # ============================================================
 # API 接口
 # ============================================================
-@app.get("/api/products", summary="获取商品列表（按克价升序）")
+@app.get("/api/products", summary="获取商品列表")
 def get_products(
     limit: int = Query(default=50, ge=1, le=500, description="返回数量，默认 50"),
+    platform: Optional[str] = Query(default=None, description="平台筛选: JD / TAOBAO，为空返回全部"),
+    sort_by: str = Query(default="price_per_gram", description="排序字段: price_per_gram / final_price / weight_grams / update_time"),
+    sort_order: str = Query(default="asc", description="排序方向: asc / desc"),
     db: Session = Depends(get_db),
 ):
     """
-    返回数据库中所有黄金商品，按 price_per_gram 从低到高排序。
+    返回黄金商品列表，支持按平台筛选、多字段排序。
     """
-    products = (
-        db.query(Product)
-        .order_by(Product.price_per_gram.asc())
-        .limit(limit)
-        .all()
-    )
+    query = db.query(Product)
+
+    # 平台筛选
+    if platform:
+        query = query.filter(Product.platform == platform)
+
+    # 排序
+    sort_column_map = {
+        "price_per_gram": Product.price_per_gram,
+        "final_price":    Product.final_price,
+        "weight_grams":   Product.weight_grams,
+        "update_time":    Product.update_time,
+    }
+    sort_col = sort_column_map.get(sort_by, Product.price_per_gram)
+    if sort_order == "desc":
+        query = query.order_by(sort_col.desc())
+    else:
+        query = query.order_by(sort_col.asc())
+
+    products = query.limit(limit).all()
     return {
         "total": len(products),
-        "data": [
+        "products": [
             {
                 "id":             p.id,
                 "item_id":        p.item_id,
+                "platform":       p.platform or "TAOBAO",
                 "title":          p.title,
                 "cover_image":    p.cover_image,
+                "affiliate_url":  p.affiliate_url,
                 "original_price": p.original_price,
                 "final_price":    p.final_price,
                 "weight_grams":   p.weight_grams,
                 "price_per_gram": p.price_per_gram,
+                "discount_tags":  "[]",
                 "update_time":    p.update_time.strftime("%Y-%m-%d %H:%M:%S") if p.update_time else None,
             }
             for p in products
