@@ -26,12 +26,16 @@ async def get_products(
     platform: Optional[Literal["JD", "TAOBAO"]] = Query(
         None, description="平台筛选: JD 或 TAOBAO"
     ),
-    sort_by: Literal["price_per_gram", "final_price", "weight_grams", "update_time"] = Query(
-        "price_per_gram", description="排序字段"
+    sort_by: Literal[
+        "price_per_gram", "final_price", "weight_grams", "update_time",
+        "discount_rate", "coupon_amount", "discount_amount", "monthly_sales"
+    ] = Query(
+        "discount_rate", description="排序字段"
     ),
     sort_order: Literal["asc", "desc"] = Query(
-        "asc", description="排序方向"
+        "desc", description="排序方向"
     ),
+    only_lowest: bool = Query(False, description="仅显示近期最低价商品"),
     limit: int = Query(50, ge=1, le=200, description="返回数量限制"),
     offset: int = Query(0, ge=0, description="偏移量"),
     db: Session = Depends(get_db),
@@ -40,8 +44,9 @@ async def get_products(
     获取商品列表
 
     - **platform**: 可选，筛选平台 (JD/TAOBAO)
-    - **sort_by**: 排序字段，默认按克价升序
+    - **sort_by**: 排序字段，默认按折扣率降序
     - **sort_order**: 排序方向 (asc/desc)
+    - **only_lowest**: 仅显示近期最低价商品
     - **limit**: 返回数量，默认 50，最大 200
     - **offset**: 分页偏移量
     """
@@ -50,6 +55,10 @@ async def get_products(
     # 平台筛选
     if platform:
         query = query.filter(GoldProduct.platform == platform)
+
+    # 仅显示近期最低价
+    if only_lowest:
+        query = query.filter(GoldProduct.is_price_lowest == True)
 
     # 获取总数
     total = query.count()
@@ -79,6 +88,9 @@ async def get_stats(db: Session = Depends(get_db)):
     - 收录商品总数
     - 今日更新商品数
     - 最低克价及对应商品
+    - 最高折扣率及对应商品
+    - 最大优惠券金额
+    - 近期新低商品数
     - 最后更新时间
     """
     # 总商品数
@@ -90,10 +102,27 @@ async def get_stats(db: Session = Depends(get_db)):
         GoldProduct.update_time >= today_start
     ).count()
 
-    # 最低克价商品
-    lowest_product = db.query(GoldProduct).order_by(
+    # 最低克价商品 (排除克价为0的)
+    lowest_product = db.query(GoldProduct).filter(
+        GoldProduct.price_per_gram > 0
+    ).order_by(
         asc(GoldProduct.price_per_gram)
     ).first()
+
+    # 最高折扣率商品
+    best_discount_product = db.query(GoldProduct).filter(
+        GoldProduct.discount_rate > 0
+    ).order_by(
+        desc(GoldProduct.discount_rate)
+    ).first()
+
+    # 最大优惠券金额
+    max_coupon = db.query(func.max(GoldProduct.coupon_amount)).scalar() or 0
+
+    # 近期新低商品数
+    price_lowest_count = db.query(GoldProduct).filter(
+        GoldProduct.is_price_lowest == True
+    ).count()
 
     # 最后更新时间
     last_update = db.query(func.max(GoldProduct.update_time)).scalar()
@@ -103,6 +132,10 @@ async def get_stats(db: Session = Depends(get_db)):
         today_products=today_products,
         lowest_price_per_gram=lowest_product.price_per_gram if lowest_product else None,
         lowest_price_product=ProductResponse.model_validate(lowest_product) if lowest_product else None,
+        best_discount_rate=best_discount_product.discount_rate if best_discount_product else None,
+        best_discount_product=ProductResponse.model_validate(best_discount_product) if best_discount_product else None,
+        max_coupon_amount=max_coupon,
+        price_lowest_count=price_lowest_count,
         last_update_time=last_update,
     )
 
@@ -115,7 +148,7 @@ async def sync_products(db: Session = Depends(get_db)):
     从京东和淘宝抓取最新数据并处理入库
     """
     try:
-        all_stats = {"total": 0, "processed": 0, "filtered": 0, "saved": 0, "updated": 0}
+        all_stats = {"total": 0, "processed": 0, "filtered": 0, "saved": 0, "updated": 0, "price_lowest": 0}
 
         # 京东数据
         jd_scraper = JDScraper()
@@ -133,7 +166,7 @@ async def sync_products(db: Session = Depends(get_db)):
 
         return SyncResponse(
             success=True,
-            message=f"同步完成: 新增 {all_stats['saved']} 条, 更新 {all_stats['updated']} 条",
+            message=f"同步完成: 新增 {all_stats['saved']} 条, 更新 {all_stats['updated']} 条, 近期新低 {all_stats['price_lowest']} 条",
             stats=all_stats,
         )
 

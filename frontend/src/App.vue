@@ -9,18 +9,26 @@
             <img src="/gold.svg" alt="Logo" class="w-10 h-10" />
             <div>
               <h1 class="text-xl font-bold text-gray-900">黄金优惠监控</h1>
-              <p class="text-sm text-gray-500">实时追踪最低克价</p>
+              <p class="text-sm text-gray-500">多维度发现最超值黄金</p>
             </div>
           </div>
 
           <!-- Stats -->
           <div v-if="stats" class="hidden sm:flex items-center space-x-6">
             <div class="text-center">
-              <p class="text-xs text-gray-500">今日最低克价</p>
+              <p class="text-xs text-gray-500">最高折扣</p>
               <p class="text-2xl font-bold text-red-600">
-                ¥{{ stats.lowest_price_per_gram?.toFixed(2) || '--' }}
-                <span class="text-sm font-normal">/克</span>
+                {{ stats.best_discount_rate ? (stats.best_discount_rate * 100).toFixed(1) + '%' : '--' }}
+                <span class="text-sm font-normal">OFF</span>
               </p>
+            </div>
+            <div class="text-center">
+              <p class="text-xs text-gray-500">最大券面</p>
+              <p class="text-lg font-semibold text-orange-600">¥{{ stats.max_coupon_amount || 0 }}</p>
+            </div>
+            <div class="text-center">
+              <p class="text-xs text-gray-500">近期新低</p>
+              <p class="text-lg font-semibold text-green-600">{{ stats.price_lowest_count || 0 }}件</p>
             </div>
             <div class="text-center">
               <p class="text-xs text-gray-500">收录商品</p>
@@ -38,8 +46,16 @@
     <!-- Mobile Stats Bar -->
     <div v-if="stats" class="sm:hidden bg-gradient-to-r from-amber-500 to-orange-500 text-white px-4 py-3">
       <div class="flex justify-between items-center">
-        <span class="text-sm">今日最低克价</span>
-        <span class="text-xl font-bold">¥{{ stats.lowest_price_per_gram?.toFixed(2) || '--' }}/克</span>
+        <div class="flex items-center space-x-4">
+          <div>
+            <span class="text-xs opacity-80">最高折扣</span>
+            <p class="text-lg font-bold">{{ stats.best_discount_rate ? (stats.best_discount_rate * 100).toFixed(1) + '%' : '--' }} OFF</p>
+          </div>
+          <div>
+            <span class="text-xs opacity-80">近期新低</span>
+            <p class="text-lg font-bold">{{ stats.price_lowest_count || 0 }}件</p>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -65,6 +81,20 @@
             </button>
           </div>
 
+          <!-- Price Lowest Filter -->
+          <button
+            @click="onlyLowest = !onlyLowest"
+            :class="[
+              'px-3 py-1.5 rounded-full text-sm font-medium transition-colors flex items-center space-x-1',
+              onlyLowest
+                ? 'bg-green-500 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            ]"
+          >
+            <span>🔥</span>
+            <span>仅看新低</span>
+          </button>
+
           <!-- Sort -->
           <div class="flex items-center space-x-2 ml-auto">
             <span class="text-sm text-gray-600">排序:</span>
@@ -72,9 +102,12 @@
               v-model="sortBy"
               class="px-3 py-1.5 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
             >
+              <option value="discount_rate">折扣力度</option>
+              <option value="discount_amount">降价金额</option>
+              <option value="coupon_amount">优惠券面额</option>
+              <option value="monthly_sales">月销量</option>
               <option value="price_per_gram">克价最低</option>
               <option value="final_price">价格最低</option>
-              <option value="weight_grams">克重最大</option>
               <option value="update_time">最近更新</option>
             </select>
           </div>
@@ -99,6 +132,7 @@
           v-for="product in products"
           :key="product.item_id"
           :product="product"
+          :sort-by="sortBy"
         />
       </div>
 
@@ -132,7 +166,8 @@ const products = ref([])
 const stats = ref(null)
 const loading = ref(true)
 const selectedPlatform = ref('')
-const sortBy = ref('price_per_gram')
+const sortBy = ref('discount_rate')
+const onlyLowest = ref(false)
 
 // Platform options
 const platforms = [
@@ -141,17 +176,31 @@ const platforms = [
   { label: '淘宝', value: 'TAOBAO' },
 ]
 
+// 根据排序字段决定排序方向
+function getSortOrder(field) {
+  // 这些字段值越大越好，用降序
+  const descFields = ['discount_rate', 'discount_amount', 'coupon_amount', 'monthly_sales']
+  if (descFields.includes(field)) return 'desc'
+  // 这些字段值越小越好，用升序
+  if (field === 'price_per_gram' || field === 'final_price') return 'asc'
+  // update_time 最近的在前
+  return 'desc'
+}
+
 // Fetch data
 async function fetchData() {
   loading.value = true
   try {
     const params = {
       sort_by: sortBy.value,
-      sort_order: sortBy.value === 'update_time' ? 'desc' : 'asc',
+      sort_order: getSortOrder(sortBy.value),
       limit: 50,
     }
     if (selectedPlatform.value) {
       params.platform = selectedPlatform.value
+    }
+    if (onlyLowest.value) {
+      params.only_lowest = true
     }
     const data = await getProducts(params)
     products.value = data.products
@@ -184,7 +233,7 @@ function formatTime(dateStr) {
 }
 
 // Watch filters
-watch([selectedPlatform, sortBy], () => {
+watch([selectedPlatform, sortBy, onlyLowest], () => {
   fetchData()
 })
 

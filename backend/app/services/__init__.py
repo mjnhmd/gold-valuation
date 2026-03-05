@@ -4,6 +4,8 @@ from .processor import (
     is_fixed_price_product,
     is_non_pure_gold,
     calculate_price_per_gram,
+    calculate_discount_rate,
+    calculate_discount_amount,
     process_raw_product,
     process_and_save_products,
 )
@@ -13,6 +15,8 @@ __all__ = [
     "is_fixed_price_product",
     "is_non_pure_gold",
     "calculate_price_per_gram",
+    "calculate_discount_rate",
+    "calculate_discount_amount",
     "process_raw_product",
     "process_and_save_products",
 ]

@@ -1,5 +1,5 @@
 """
-GET /api/stats — 统计概览
+GET /api/stats — 统计概览（多维度）
 """
 import json
 import os
@@ -20,24 +20,37 @@ class handler(BaseHTTPRequestHandler):
             init_db()
             conn = get_conn()
             cur = conn.cursor()
+
+            # 基础统计
             cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     MIN(price_per_gram) FILTER (WHERE price_per_gram > 0) AS min_ppg,
-                    MAX(price_per_gram) AS max_ppg,
-                    AVG(price_per_gram) FILTER (WHERE price_per_gram > 0) AS avg_ppg,
+                    MAX(discount_rate) AS best_discount_rate,
+                    MAX(coupon_amount) AS max_coupon,
+                    COUNT(*) FILTER (WHERE is_price_lowest = TRUE) AS price_lowest_count,
                     MAX(update_time) AS last_update
                 FROM products
             """)
             r = cur.fetchone()
+
+            # 今日更新数
+            cur.execute("""
+                SELECT COUNT(*) AS cnt FROM products
+                WHERE update_time >= CURRENT_DATE
+            """)
+            today = cur.fetchone()["cnt"]
+
             cur.close()
             conn.close()
 
             body = json.dumps({
                 "total_products": r["total"] or 0,
-                "lowest_price_per_gram": round(r["min_ppg"], 2) if r["min_ppg"] else 0,
-                "highest_price_per_gram": round(r["max_ppg"], 2) if r["max_ppg"] else 0,
-                "avg_price_per_gram": round(r["avg_ppg"], 2) if r["avg_ppg"] else 0,
+                "today_products": today or 0,
+                "lowest_price_per_gram": round(r["min_ppg"], 2) if r["min_ppg"] else None,
+                "best_discount_rate": round(r["best_discount_rate"], 4) if r["best_discount_rate"] else None,
+                "max_coupon_amount": round(r["max_coupon"], 2) if r["max_coupon"] else 0,
+                "price_lowest_count": r["price_lowest_count"] or 0,
                 "last_update_time": r["last_update"].strftime("%Y-%m-%d %H:%M:%S") if r["last_update"] else None,
             }, ensure_ascii=False)
 

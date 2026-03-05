@@ -25,6 +25,8 @@ class RawProductData:
     original_price: float
     final_price: float
     discount_tags: Optional[str] = None
+    coupon_amount: float = 0  # 优惠券金额
+    monthly_sales: int = 0  # 月销量
 
 
 class BaseScraper(ABC):
@@ -282,6 +284,21 @@ class TaobaoScraper(BaseScraper):
                     else item_url
                 )
 
+                # 提取优惠券金额（数值）
+                coupon_amount = float(coupon) if coupon and float(coupon) > 0 else 0
+
+                # 提取月销量
+                monthly_sales = 0
+                for sales_key in ("itemsale", "itemsale2", "month_sales", "tkrates"):
+                    sales_val = item.get(sales_key, "")
+                    if sales_val:
+                        try:
+                            monthly_sales = int(float(str(sales_val).replace("+", "").replace("万", "0000")))
+                            if monthly_sales > 0:
+                                break
+                        except (ValueError, TypeError):
+                            continue
+
                 products.append(
                     RawProductData(
                         platform="TAOBAO",
@@ -292,6 +309,8 @@ class TaobaoScraper(BaseScraper):
                         original_price=original_price,
                         final_price=final_price,
                         discount_tags=discount_tags,
+                        coupon_amount=coupon_amount,
+                        monthly_sales=monthly_sales,
                     )
                 )
             except (ValueError, TypeError) as e:

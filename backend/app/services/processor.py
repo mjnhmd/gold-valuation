@@ -1,17 +1,18 @@
 """
 Data Processor - 数据清洗与处理服务
-核心逻辑：从标题提取克重，过滤无效数据
+核心逻辑：计算多维优惠指标，记录价格历史
 """
 
 import re
 import logging
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.scrapers import RawProductData
-from app.models import GoldProduct
+from app.models import GoldProduct, PriceHistory
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,8 @@ NON_PURE_GOLD_KEYWORDS = [
     "合金",
 ]
 
-# 克价上限（超过此值认为是一口价或非黄金）
-MAX_PRICE_PER_GRAM = 1000.0
+# 历史价格对比天数
+PRICE_HISTORY_DAYS = 30
 
 
 def extract_weight(title: str) -> Optional[float]:
@@ -107,24 +108,97 @@ def is_non_pure_gold(title: str) -> bool:
 
 
 def calculate_price_per_gram(final_price: float, weight_grams: float) -> float:
+    """计算单克价"""
+    if weight_grams <= 0:
+        return 0
+    return round(final_price / weight_grams, 2)
+
+
+def calculate_discount_rate(original_price: float, final_price: float) -> float:
     """
-    计算单克价
+    计算折扣率
 
     Args:
-        final_price: 最终价格
-        weight_grams: 克重
+        original_price: 原价
+        final_price: 券后价
 
     Returns:
-        单克价格
+        折扣率 (0~1之间)，例如 0.15 表示打了85折/优惠了15%
     """
-    if weight_grams <= 0:
-        return float("inf")
-    return round(final_price / weight_grams, 2)
+    if original_price <= 0 or final_price <= 0:
+        return 0
+    if final_price >= original_price:
+        return 0
+    return round((original_price - final_price) / original_price, 4)
+
+
+def calculate_discount_amount(original_price: float, final_price: float) -> float:
+    """
+    计算降价金额
+
+    Args:
+        original_price: 原价
+        final_price: 券后价
+
+    Returns:
+        降价金额 = 原价 - 券后价
+    """
+    if original_price <= 0 or final_price <= 0:
+        return 0
+    diff = original_price - final_price
+    return round(max(diff, 0), 2)
+
+
+def check_is_price_lowest(db: Session, item_id: str, current_price: float) -> bool:
+    """
+    检查当前价格是否为近 N 天内最低价
+
+    Args:
+        db: 数据库会话
+        item_id: 商品ID
+        current_price: 当前券后价
+
+    Returns:
+        True 表示是近期最低价
+    """
+    # 查找商品
+    product = db.query(GoldProduct).filter(GoldProduct.item_id == item_id).first()
+    if not product:
+        return True  # 新商品默认是最低价
+
+    # 查询近 N 天的历史价格
+    cutoff_date = datetime.utcnow() - timedelta(days=PRICE_HISTORY_DAYS)
+    historical_min = db.query(func.min(PriceHistory.final_price)).filter(
+        PriceHistory.product_id == product.id,
+        PriceHistory.recorded_at >= cutoff_date,
+    ).scalar()
+
+    if historical_min is None:
+        return True  # 没有历史记录，当前价就是最低
+    return current_price <= historical_min
+
+
+def record_price_history(db: Session, product: GoldProduct) -> None:
+    """
+    记录当前价格到历史表
+
+    Args:
+        db: 数据库会话
+        product: 商品对象
+    """
+    history = PriceHistory(
+        product_id=product.id,
+        final_price=product.final_price,
+        original_price=product.original_price,
+        coupon_amount=product.coupon_amount,
+        recorded_at=datetime.utcnow(),
+    )
+    db.add(history)
 
 
 def process_raw_product(raw: RawProductData) -> Optional[dict]:
     """
-    处理单个原始商品数据
+    处理单个原始商品数据，计算多维优惠指标
     """
     title = raw.title
 
@@ -148,6 +222,18 @@ def process_raw_product(raw: RawProductData) -> Optional[dict]:
         weight = 0
         price_per_gram = 0
 
+    # 5. 计算折扣率
+    discount_rate = calculate_discount_rate(raw.original_price, raw.final_price)
+
+    # 6. 计算降价金额
+    discount_amount = calculate_discount_amount(raw.original_price, raw.final_price)
+
+    # 7. 优惠券金额
+    coupon_amount = raw.coupon_amount
+
+    # 8. 月销量
+    monthly_sales = raw.monthly_sales
+
     return {
         "platform": raw.platform,
         "item_id": raw.item_id,
@@ -159,6 +245,11 @@ def process_raw_product(raw: RawProductData) -> Optional[dict]:
         "weight_grams": weight,
         "price_per_gram": price_per_gram,
         "discount_tags": raw.discount_tags,
+        "discount_rate": discount_rate,
+        "coupon_amount": coupon_amount,
+        "discount_amount": discount_amount,
+        "monthly_sales": monthly_sales,
+        "is_price_lowest": False,  # 先设为 False，后续在 save 时判断
         "update_time": datetime.utcnow(),
     }
 
@@ -180,6 +271,7 @@ def process_and_save_products(raw_products: List[RawProductData], db: Session) -
         "filtered": 0,
         "saved": 0,
         "updated": 0,
+        "price_lowest": 0,
     }
 
     for raw in raw_products:
@@ -190,6 +282,12 @@ def process_and_save_products(raw_products: List[RawProductData], db: Session) -
             continue
 
         stats["processed"] += 1
+
+        # 检查是否为近期最低价
+        is_lowest = check_is_price_lowest(db, processed["item_id"], processed["final_price"])
+        processed["is_price_lowest"] = is_lowest
+        if is_lowest:
+            stats["price_lowest"] += 1
 
         # 查找是否已存在
         existing = (
@@ -203,11 +301,16 @@ def process_and_save_products(raw_products: List[RawProductData], db: Session) -
             for key, value in processed.items():
                 setattr(existing, key, value)
             stats["updated"] += 1
+            # 记录价格历史
+            record_price_history(db, existing)
         else:
             # 创建新记录
             product = GoldProduct(**processed)
             db.add(product)
+            db.flush()  # 获取 product.id
             stats["saved"] += 1
+            # 记录首条价格历史
+            record_price_history(db, product)
 
     db.commit()
 
@@ -216,7 +319,8 @@ def process_and_save_products(raw_products: List[RawProductData], db: Session) -
         f"有效 {stats['processed']}, "
         f"过滤 {stats['filtered']}, "
         f"新增 {stats['saved']}, "
-        f"更新 {stats['updated']}"
+        f"更新 {stats['updated']}, "
+        f"近期新低 {stats['price_lowest']}"
     )
 
     return stats
