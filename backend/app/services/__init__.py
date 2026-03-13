@@ -2,6 +2,7 @@
 from .processor import (
     extract_weight,
     is_fixed_price_product,
+    is_weight_based_product,
     is_non_pure_gold,
     calculate_price_per_gram,
     calculate_discount_rate,
@@ -13,6 +14,7 @@ from .processor import (
 __all__ = [
     "extract_weight",
     "is_fixed_price_product",
+    "is_weight_based_product",
     "is_non_pure_gold",
     "calculate_price_per_gram",
     "calculate_discount_rate",

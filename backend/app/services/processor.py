@@ -94,6 +94,25 @@ def is_fixed_price_product(title: str) -> bool:
     return any(keyword in title for keyword in FIXED_PRICE_KEYWORDS)
 
 
+def is_weight_based_product(title: str) -> bool:
+    """
+    判断是否为按克重计价的商品
+
+    Args:
+        title: 商品标题
+
+    Returns:
+        True 表示是按克重计价的商品
+    """
+    # 包含"计价"关键词的肯定是按克重计价
+    if "计价" in title:
+        return True
+    # 标题中包含克重信息（克或g）的也是按克重计价
+    if re.search(r'(\d+\.?\d*)\s*[gG克]', title):
+        return True
+    return False
+
+
 def is_non_pure_gold(title: str) -> bool:
     """
     判断是否为非纯金（18K金等）
@@ -207,7 +226,12 @@ def process_raw_product(raw: RawProductData) -> Optional[dict]:
         logger.debug(f"过滤一口价商品: {title}")
         return None
 
-    # 2. 过滤非纯金商品
+    # 2. 只保留按克重计价的商品
+    if not is_weight_based_product(title):
+        logger.debug(f"过滤非计价商品: {title}")
+        return None
+
+    # 3. 过滤非纯金商品
     if is_non_pure_gold(title):
         logger.debug(f"过滤非纯金商品: {title}")
         return None

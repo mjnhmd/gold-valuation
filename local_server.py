@@ -95,6 +95,27 @@ def get_db():
 # ============================================================
 # 工具函数：从标题中正则提取克重
 # ============================================================
+
+# 一口价/非计价黄金关键词（用于过滤）
+FIXED_PRICE_KEYWORDS = ["一口价", "定价", "固定价"]
+
+
+def is_fixed_price_product(title: str) -> bool:
+    """判断是否为一口价商品（一口价、定价、固定价都是固定价格）"""
+    return any(keyword in title for keyword in FIXED_PRICE_KEYWORDS)
+
+
+def is_weight_based_product(title: str) -> bool:
+    """判断是否为按克重计价的商品"""
+    # 包含"计价"关键词的肯定是按克重计价
+    if "计价" in title:
+        return True
+    # 标题中包含克重信息（克或g）的也是按克重计价
+    if re.search(r'(\d+\.?\d*)\s*[gG克]', title):
+        return True
+    return False
+
+
 def extract_weight_from_title(title: str) -> Optional[float]:
     """
     从商品标题中提取黄金克重。
@@ -219,6 +240,12 @@ def normalize_jd_item(item: dict) -> dict:
     if not item_id or not title:
         return {}
 
+    # 过滤一口价商品，只保留按克重计价的商品
+    if is_fixed_price_product(title):
+        return {}
+    if not is_weight_based_product(title):
+        return {}
+
     try:
         original_price = float(item.get("itemprice", 0))
         final_price = float(item.get("itemendprice", 0))
@@ -227,10 +254,10 @@ def normalize_jd_item(item: dict) -> dict:
     if final_price <= 0:
         return {}
 
-    # 克重
+    # 克重：只保留有克重的计价黄金
     weight = extract_weight_from_title(title)
     if weight is None:
-        weight = 0
+        return {}
     price_per_gram = round(final_price / weight, 2) if weight > 0 else 0
 
     # 推广链接：优先 couponurl，否则用 itempic 同域的商品页
@@ -267,10 +294,17 @@ def _process_taobao_items(all_items: list[dict]) -> list[dict]:
         if not item_id or not title:
             continue
 
+        # 过滤一口价商品，只保留按克重计价的商品
+        if is_fixed_price_product(title):
+            continue
+        if not is_weight_based_product(title):
+            continue
+
         weight = extract_weight_from_title(title)
+        # 只保留有克重的计价黄金
         if weight is None:
             no_weight += 1
-            weight = 0
+            continue
 
         try:
             original_price = float(item.get("itemprice", 0))

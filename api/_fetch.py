@@ -12,6 +12,27 @@ TB_URL = "https://v2.api.haodanku.com/supersearch"
 JD_URL = "https://v3.api.haodanku.com/jd_goods_search"
 
 
+# 一口价/非计价黄金关键词（用于过滤）
+FIXED_PRICE_KEYWORDS = ["一口价", "定价", "固定价"]
+
+
+def is_fixed_price_product(title: str) -> bool:
+    """判断是否为一口价商品（一口价、定价、固定价都是固定价格）"""
+    FIXED_PRICE_KEYWORDS = ["一口价", "定价", "固定价"]
+    return any(keyword in title for keyword in FIXED_PRICE_KEYWORDS)
+
+
+def is_weight_based_product(title: str) -> bool:
+    """判断是否为按克重计价的商品"""
+    # 包含"计价"关键词的肯定是按克重计价
+    if "计价" in title:
+        return True
+    # 标题中包含克重信息（克或g）的也是按克重计价
+    if re.search(r'(\d+\.?\d*)\s*[gG克]', title):
+        return True
+    return False
+
+
 def extract_weight(title: str) -> Optional[float]:
     """从标题中正则提取克重"""
     match = re.search(r"约?\s*(\d+\.?\d*)\s*[gG克]", title)
@@ -71,6 +92,7 @@ def _get(url: str, label: str) -> dict | None:
 
 # ── 淘宝 ──────────────────────────────────────────
 def fetch_taobao(keyword="周大福", pages=1) -> list[dict]:
+    results = []
     all_items = []
     for page in range(1, pages + 1):
         url = f"{TB_URL}/apikey/{API_KEY}/keyword/{keyword}/back/100/min_id/1/tb_p/{page}"
@@ -82,11 +104,20 @@ def fetch_taobao(keyword="周大福", pages=1) -> list[dict]:
         if len(items) < 100:
             break
 
-    results = []
     for item in all_items:
         title = item.get("itemtitle", "")
         item_id = item.get("itemid", "")
         if not item_id or not title:
+            continue
+        # 只保留按克重计价的商品（非一口价）
+        if is_fixed_price_product(title):
+            continue
+        # 强制要求包含"计价"关键词
+        if not is_weight_based_product(title):
+            continue
+        # 必须能提取到克重，否则无法计算克价
+        w = extract_weight(title)
+        if not w or w <= 0:
             continue
         try:
             orig = float(item.get("itemprice", 0))
@@ -96,8 +127,7 @@ def fetch_taobao(keyword="周大福", pages=1) -> list[dict]:
         if final <= 0:
             continue
 
-        w = extract_weight(title) or 0
-        ppg = round(final / w, 2) if w > 0 else 0
+        ppg = round(final / w, 2)
         disc = calc_discount(orig, final)
         coupon = parse_coupon(item)
         sales = parse_sales(item)
@@ -140,6 +170,11 @@ def fetch_jd(keyword="周大福黄金", pages=1) -> list[dict]:
             item_id = item.get("skuid", "") or item.get("itemid", "")
             if not item_id or not title:
                 continue
+            # 只保留按克重计价的商品（非一口价）
+            if is_fixed_price_product(title):
+                continue
+            if not is_weight_based_product(title):
+                continue
             try:
                 orig = float(item.get("itemprice", 0))
                 final = float(item.get("itemendprice", 0))
@@ -148,8 +183,11 @@ def fetch_jd(keyword="周大福黄金", pages=1) -> list[dict]:
             if final <= 0:
                 continue
 
-            w = extract_weight(title) or 0
-            ppg = round(final / w, 2) if w > 0 else 0
+            w = extract_weight(title)
+            # 只保留有克重的计价黄金
+            if not w or w <= 0:
+                continue
+            ppg = round(final / w, 2)
             disc = calc_discount(orig, final)
             coupon = parse_coupon(item)
             sales = parse_sales(item)
